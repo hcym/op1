@@ -3,7 +3,7 @@
 
 ## 📌如何能编译到最新代码？
 
-### 方法1：
+### 方法 1：
 
 执行 `./scripts/feeds update -a` 操作前，在 `feeds.conf.default` **顶部**插入如下代码：
 
