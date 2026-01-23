@@ -40,6 +40,9 @@ o:value("socks", translate("Socks"))
 o:value("shadowsocks", translate("Shadowsocks"))
 o:value("trojan", translate("Trojan"))
 o:value("wireguard", translate("WireGuard"))
+if api.compare_versions(xray_version, ">=", "26.1.13") then
+	o:value("hysteria2", translate("Hysteria2"))
+end
 if api.compare_versions(xray_version, ">=", "1.8.12") then
 	o:value("_balancing", translate("Balancing"))
 end
@@ -212,13 +215,13 @@ o.default = "2"
 o.placeholder = "2"
 o.description = translate("The load balancer selects the optimal number of nodes, and traffic is randomly distributed among them.")
 
-
+local default_node = m.uci:get(appname, arg[1], "default_node") or "_direct"
 -- [[ 分流模块 ]]
 if #nodes_table > 0 then
 	o = s:option(Flag, _n("preproxy_enabled"), translate("Preproxy"))
 	o:depends({ [_n("protocol")] = "_shunt" })
 
-	o = s:option(ListValue, _n("main_node"), string.format('<a style="color:red">%s</a>', translate("Preproxy Node")), translate("Set the node to be used as a pre-proxy. Each rule (including <code>Default</code>) has a separate switch that controls whether this rule uses the pre-proxy or not."))
+	o = s:option(ListValue, _n("main_node"), string.format('<a style="color:#FF8C00">%s</a>', translate("Preproxy Node")), translate("Set the node to be used as a pre-proxy. Each rule (including <code>Default</code>) has a separate switch that controls whether this rule uses the pre-proxy or not."))
 	o:depends({ [_n("protocol")] = "_shunt", [_n("preproxy_enabled")] = true })
 	o.template = appname .. "/cbi/nodes_listvalue"
 	o.group = {}
@@ -238,6 +241,9 @@ if #nodes_table > 0 then
 		o:value(v.id, v.remark)
 		o.group[#o.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
 	end
+
+	o = s:option(Flag, _n("fakedns"), "FakeDNS", translate("Use FakeDNS work in the shunt domain that proxy."))
+	o:depends({ [_n("protocol")] = "_shunt" })
 end
 m.uci:foreach(appname, "shunt_rules", function(e)
 	if e[".name"] and e.remarks then
@@ -251,9 +257,17 @@ m.uci:foreach(appname, "shunt_rules", function(e)
 		o.group = {"","","",""}
 
 		if #nodes_table > 0 then
+			local pt = s:option(ListValue, _n(e[".name"] .. "_proxy_tag"), string.format('* <a style="color:#FF8C00">%s</a>', e.remarks .. " " .. translate("Preproxy")))
+			pt:value("", translate("Close"))
+			pt:value("main", translate("Preproxy Node"))
+			pt:depends("__hide__", "1")
+
+			local fakedns_tag = s:option(Flag, _n(e[".name"] .. "_fakedns"), string.format('* <a style="color:#FF8C00">%s</a>', e.remarks .. " " .. "FakeDNS"))
+
 			for k, v in pairs(socks_list) do
 				o:value(v.id, v.remark)
 				o.group[#o.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
+				fakedns_tag:depends({ [_n("protocol")] = "_shunt", [_n("fakedns")] = true, [_n(e[".name"])] = v.id })
 			end
 			for k, v in pairs(balancers_table) do
 				o:value(v.id, v.remark)
@@ -263,15 +277,16 @@ m.uci:foreach(appname, "shunt_rules", function(e)
 				o:value(v.id, v.remark)
 				o.group[#o.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
 			end
-			local pt = s:option(ListValue, _n(e[".name"] .. "_proxy_tag"), string.format('* <a style="color:red">%s</a>', e.remarks .. " " .. translate("Preproxy")))
-			pt:value("", translate("Close"))
-			pt:value("main", translate("Preproxy Node"))
 			for k, v in pairs(nodes_table) do
 				o:value(v.id, v.remark)
 				o.group[#o.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
 				if not api.is_local_ip(v.address) then  --本地节点禁止使用前置
 					pt:depends({ [_n("protocol")] = "_shunt", [_n("preproxy_enabled")] = true, [_n(e[".name"])] = v.id })
 				end
+				fakedns_tag:depends({ [_n("protocol")] = "_shunt", [_n("fakedns")] = true, [_n(e[".name"])] = v.id })
+			end
+			if default_node ~= "_direct" or default_node ~= "_blackhole" then
+				fakedns_tag:depends({ [_n("protocol")] = "_shunt", [_n("fakedns")] = true, [_n(e[".name"])] = "_default" })
 			end
 		end
 	end
@@ -308,6 +323,7 @@ if #nodes_table > 0 then
 	local dpt = s:option(ListValue, _n("default_proxy_tag"), string.format('* <a style="color:red">%s</a>', translate("Default Preproxy")), translate("When using, localhost will connect this node first and then use this node to connect the default node."))
 	dpt:value("", translate("Close"))
 	dpt:value("main", translate("Preproxy Node"))
+	dpt:depends("__hide__", "1")
 	for k, v in pairs(nodes_table) do
 		o:value(v.id, v.remark)
 		o.group[#o.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
@@ -399,6 +415,42 @@ o:value("", translate("Disable"))
 o:value("xtls-rprx-vision")
 o:depends({ [_n("protocol")] = "vless" })
 
+---- [[hysteria2]]
+o = s:option(Value, _n("hysteria2_hop"), translate("Port hopping range"))
+o.description = translate("Format as 1000:2000 or 1000-2000 Multiple groups are separated by commas (,).")
+o:depends({ [_n("protocol")] = "hysteria2" })
+
+o = s:option(Value, _n("hysteria2_hop_interval"), translate("Hop Interval"), translate("Example:") .. "30s (≥5s)")
+o.placeholder = "30s"
+o.default = "30s"
+o:depends({ [_n("protocol")] = "hysteria2" })
+
+o = s:option(Value, _n("hysteria2_up_mbps"), translate("Max upload Mbps"))
+o:depends({ [_n("protocol")] = "hysteria2" })
+
+o = s:option(Value, _n("hysteria2_down_mbps"), translate("Max download Mbps"))
+o:depends({ [_n("protocol")] = "hysteria2" })
+
+o = s:option(ListValue, _n("hysteria2_obfs_type"), translate("Obfs Type"))
+o:value("", translate("Disable"))
+o:value("salamander")
+o:depends({ [_n("protocol")] = "hysteria2" })
+
+o = s:option(Value, _n("hysteria2_obfs_password"), translate("Obfs Password"))
+o:depends({ [_n("protocol")] = "hysteria2" })
+
+o = s:option(Value, _n("hysteria2_auth_password"), translate("Auth Password"))
+o.password = true
+o:depends({ [_n("protocol")] = "hysteria2"})
+
+o = s:option(Value, _n("hysteria2_idle_timeout"), translate("Idle Timeout"), translate("Example:") .. "30s (4s-120s)")
+o:depends({ [_n("protocol")] = "hysteria2"})
+
+o = s:option(Flag, _n("hysteria2_disable_mtu_discovery"), translate("Disable MTU detection"))
+o.default = "0"
+o:depends({ [_n("protocol")] = "hysteria2"})
+---- [[hysteria2 end]]
+
 o = s:option(Flag, _n("tls"), translate("TLS"))
 o.default = 0
 o:depends({ [_n("protocol")] = "vmess" })
@@ -426,6 +478,7 @@ o:value("http/1.1")
 o:value("h2,http/1.1")
 o:value("h3,h2,http/1.1")
 o:depends({ [_n("tls")] = true, [_n("reality")] = false })
+o:depends({ [_n("protocol")] = "hysteria2" })
 
 -- o = s:option(Value, _n("minversion"), translate("minversion"))
 -- o.default = "1.3"
@@ -434,10 +487,12 @@ o:depends({ [_n("tls")] = true, [_n("reality")] = false })
 
 o = s:option(Value, _n("tls_serverName"), translate("Domain"))
 o:depends({ [_n("tls")] = true })
+o:depends({ [_n("protocol")] = "hysteria2" })
 
 o = s:option(Flag, _n("tls_allowInsecure"), translate("allowInsecure"), translate("Whether unsafe connections are allowed. When checked, Certificate validation will be skipped."))
 o.default = "0"
 o:depends({ [_n("tls")] = true, [_n("reality")] = false })
+o:depends({ [_n("protocol")] = "hysteria2" })
 
 o = s:option(Value, _n("tls_chain_fingerprint"), translate("TLS Chain Fingerprint (SHA256)"), translate("Once set, connects only when the server’s chain fingerprint matches."))
 o:depends({ [_n("tls")] = true, [_n("reality")] = false })
@@ -445,6 +500,7 @@ o:depends({ [_n("tls")] = true, [_n("reality")] = false })
 o = s:option(Flag, _n("ech"), translate("ECH"))
 o.default = "0"
 o:depends({ [_n("tls")] = true, [_n("flow")] = "", [_n("reality")] = false })
+o:depends({ [_n("protocol")] = "hysteria2" })
 
 o = s:option(TextValue, _n("ech_config"), translate("ECH Config"))
 o.default = ""
@@ -734,11 +790,6 @@ o:depends({ [_n("mux")] = true })
 
 o = s:option(Flag, _n("tcp_fast_open"), "TCP " .. translate("Fast Open"))
 o.default = 0
-o:depends({ [_n("protocol")] = "vmess" })
-o:depends({ [_n("protocol")] = "vless" })
-o:depends({ [_n("protocol")] = "socks" })
-o:depends({ [_n("protocol")] = "shadowsocks" })
-o:depends({ [_n("protocol")] = "trojan" })
 
 --[[tcpMptcp]]
 o = s:option(Flag, _n("tcpMptcp"), "tcpMptcp", translate("Enable Multipath TCP, need to be enabled in both server and client configuration."))
@@ -779,7 +830,8 @@ for k, v in pairs(nodes_table) do
 end
 
 for i, v in ipairs(s.fields[_n("protocol")].keylist) do
-	if not v:find("_") then
+	if not v:find("_") and v ~= "hysteria2" then
+		s.fields[_n("tcp_fast_open")]:depends({ [_n("protocol")] = v })
 		s.fields[_n("tcpMptcp")]:depends({ [_n("protocol")] = v })
 		s.fields[_n("chain_proxy")]:depends({ [_n("protocol")] = v })
 	end
