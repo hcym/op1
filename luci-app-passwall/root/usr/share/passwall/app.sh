@@ -1883,6 +1883,20 @@ start() {
 	
 	start_crontab
 	echolog "运行完成！\n"
+
+	[ "$ENABLED" = 1 ] && [ "$1" = "boot" ] && {
+		local cfgids item
+		for item in $(uci show ${CONFIG} | grep "=subscribe_list" | cut -d '.' -sf 2 | cut -d '=' -sf 1); do
+			if [ "$(config_n_get "$item" boot_update 0)" = "1" ]; then
+				local cfgid=$(uci show ${CONFIG}.$item | head -n 1 | cut -d '.' -sf 2 | cut -d '=' -sf 1)
+				cfgids="${cfgids:+$cfgids,}$cfgid"
+			fi
+		done
+		[ -n "$cfgids" ] && {
+			sleep 5
+			lua $APP_PATH/subscribe.lua start $cfgids cron > /dev/null 2>&1 &
+		}
+	}
 }
 
 stop() {
@@ -1900,7 +1914,7 @@ stop() {
 		fi
 	done
 	pgrep -f "sleep.*(6s|9s|58s)" | xargs kill -9 >/dev/null 2>&1
-	pgrep -af "${CONFIG}/" | awk '! /app\.sh|subscribe\.lua|rule_update\.lua|tasks\.sh|ujail/{print $1}' | xargs kill -9 >/dev/null 2>&1
+	pgrep -af "${CONFIG}/" | awk '! /app\.sh|subscribe\.lua|rule_update\.lua|tasks\.sh|server_app\.lua|ujail/{print $1}' | xargs kill -9 >/dev/null 2>&1
 	stop_crontab
 	source $APP_PATH/helper_smartdns.sh del
 	rm -rf $GLOBAL_DNSMASQ_CONF
@@ -2054,7 +2068,7 @@ socks_node_switch)
 	socks_node_switch $@
 	;;
 start)
-	start
+	start $@
 	;;
 stop)
 	stop
